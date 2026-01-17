@@ -40,8 +40,18 @@ The app is optimized for speed so you can keep your focus on the race:
 - [ ] **Function Key Navigation:** Implement F1–F4 shortcuts for instantaneous switching between app modules.
 - [ ] **Background Controls:** Enable keyboard shortcuts to update the app without needing to Alt+Tab out of MakeWay.
 - [ ] **Automated Updates:** Remote parsing to auto-sync new car releases via a web-hosted manifest.
+- [ ] **Auto-Updater:** Implement automatic app updates based on Git tags/releases.
 - [ ] **Live Sync:** Real-time session synchronization logic.
 - [ ] **Note Search:** Enhanced collection filtering based on user-added notes.
+- [ ] **Session Hover Stats:** Display all driven cars + count when hovering over player session stats.
+- [ ] **Car Selection on Stat Increment:** When adding +1 stat, prompt user to select which car was driven that round and register to statistics.
+- [ ] **Zero Collection Handler:** When collection count is 0, open modal to select car → decrease drive count for that car by 1.
+- [ ] **Most Driven Car Stats:** Add statistics tab showing most driven car (separate views for Offline/Online).
+- [ ] **Win Rate by Car:** Display percentage statistics for which car has the highest win rate.
+- [ ] **Manual Drive Counter:** Add manual +/− buttons per car for adjusting drive counts.
+- [ ] **Dark Mode Fix:** Resolve layout issues in dark mode for live sessions view.
+- [ ] **Manual Round Controls:** Add +/− buttons to manually adjust won rounds for each player.
+- [ ] **Keyboard Number Display:** Show visual indicators in UI mapping keyboard numbers (1-4) to corresponding players.
 
 ## ⚖️ Disclaimer
 This is a fan-made project and is not officially affiliated with Ice Beam Games. All game-related assets and names are property of their respective owners.
