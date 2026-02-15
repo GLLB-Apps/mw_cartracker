@@ -679,7 +679,9 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                 const SizedBox(height: 8),
                 Center(
                   child: Text(
-                    'Version 1.0.0',
+                    _updateService.currentVersion != null
+                        ? 'Version ${_updateService.currentVersion}'
+                        : 'Version -',
                     style: TextStyle(
                       fontSize: 14,
                       color: theme.colorScheme.onSurface.withValues(alpha: 0.6),

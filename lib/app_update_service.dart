@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class UpdateInfo {
@@ -32,6 +33,7 @@ class AppUpdateService extends ChangeNotifier {
 
   static const String _latestReleaseApi =
       'https://api.github.com/repos/GLLB-Apps/mw_cartracker/releases/latest';
+  static const String _installedReleaseTagKey = 'installed_release_tag';
 
   String? currentVersion;
   UpdateInfo? updateInfo;
@@ -53,7 +55,17 @@ class AppUpdateService extends ChangeNotifier {
 
     try {
       final packageInfo = await PackageInfo.fromPlatform();
-      currentVersion = packageInfo.version;
+      final prefs = await SharedPreferences.getInstance();
+      final installedTag = prefs.getString(_installedReleaseTagKey);
+      final packageVersion = _normalizeVersion(packageInfo.version);
+      final installedTagVersion =
+          installedTag != null ? _normalizeVersion(installedTag) : '0.0.0';
+
+      // Use the highest known local version source so updater logic does not
+      // depend solely on hardcoded pubspec versions.
+      currentVersion = _isNewerVersion(installedTagVersion, packageVersion)
+          ? installedTagVersion
+          : packageVersion;
 
       final response = await http.get(
         Uri.parse(_latestReleaseApi),
@@ -124,6 +136,11 @@ class AppUpdateService extends ChangeNotifier {
       final filePath = '${tempDir.path}/$fileName';
       final file = File(filePath);
       await file.writeAsBytes(response.bodyBytes, flush: true);
+
+      // Persist latest release tag so next app start/update check can use a
+      // GitHub-driven local version signal.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_installedReleaseTagKey, updateInfo!.tagName);
 
       statusMessage = 'Installing update...';
       notifyListeners();
