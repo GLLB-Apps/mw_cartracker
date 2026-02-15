@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'app_update_service.dart';
 import 'models.dart';
 import 'settings_service.dart';
 import 'session_service.dart';
-import 'session_page.dart';
-import 'statistics_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final Function(bool) onThemeChanged;
@@ -14,6 +13,7 @@ class SettingsPage extends StatefulWidget {
   final List<String> favoriteOrder;
   final Function(List<String>) onFavoriteOrderChanged;
   final Function(String) onRemoveFavorite;
+  final Future<void> Function()? onRefreshRequested;
 
   const SettingsPage({
     super.key,
@@ -24,6 +24,7 @@ class SettingsPage extends StatefulWidget {
     required this.favoriteOrder,
     required this.onFavoriteOrderChanged,
     required this.onRemoveFavorite,
+    this.onRefreshRequested,
   });
 
   @override
@@ -33,6 +34,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderStateMixin {
   final SettingsService _settingsService = SettingsService();
   final SessionService _sessionService = SessionService();
+  final AppUpdateService _updateService = AppUpdateService();
   late TabController _tabController;
   late List<String> _localFavoriteOrder;
   String? displayPath;
@@ -44,13 +46,21 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     _tabController = TabController(length: 4, vsync: this);
     displayPath = widget.currentFilePath;
     _localFavoriteOrder = List<String>.from(widget.favoriteOrder);
+    _updateService.addListener(_onUpdateStateChanged);
     _loadSessionCount();
   }
 
   @override
   void dispose() {
+    _updateService.removeListener(_onUpdateStateChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _onUpdateStateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
@@ -80,11 +90,11 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         final newBasePath = '$selectedDirectory/MakeWayTracker';
         await _settingsService.setCustomBasePath(newBasePath);
         await widget.onFilePathChanged(newBasePath);
-        
+
         setState(() {
           displayPath = newBasePath;
         });
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Base folder updated!')),
@@ -103,11 +113,11 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
   Future<void> _resetToDefault() async {
     await _settingsService.setCustomBasePath(null);
     await widget.onFilePathChanged(null);
-    
+
     setState(() {
       displayPath = null;
     });
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Reset to default location')),
@@ -153,187 +163,45 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Scaffold(
-      body: Column(
-        children: [
-          // Banner header with navigation tabs
-          Stack(
-            children: [
-              Container(
-                height: 280,
-                width: double.infinity,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(
-                      'assets/banner.png',
-                      fit: BoxFit.cover,
-                      alignment: Alignment.topCenter,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: Theme.of(context).brightness == Brightness.dark
-                                  ? [const Color(0xFF3A3A3A), const Color(0xFF2A2A2A)]
-                                  : [const Color(0xFF4A9FD8), const Color(0xFFFFA842)],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.black.withValues(alpha: 0.3),
-                            Colors.black.withValues(alpha: 0.5),
-                          ],
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                        ),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 50, left: 20, right: 20),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Image.asset(
-                            'assets/mw-logo4app.png',
-                            height: 250,
-                            fit: BoxFit.contain,
-                          ),
-                          const SizedBox(width: 30),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Icon(Icons.settings, size: 40, color: Colors.white),
-                                const SizedBox(height: 8),
-                                const Text(
-                                  'Settings',
-                                  style: TextStyle(
-                                    fontSize: 40,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Customize your experience',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.white.withValues(alpha: 0.9),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+    return Column(
+      children: [
+        // Settings category tabs
+        Container(
+          color: theme.brightness == Brightness.dark
+              ? const Color(0xFF2A2A2A)
+              : const Color(0xFFFFA842),
+          child: TabBar(
+            controller: _tabController,
+            indicatorColor: Colors.white,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white.withValues(alpha: 0.6),
+            tabs: [
+              const Tab(icon: Icon(Icons.palette, size: 20), text: 'Appearance'),
+              const Tab(icon: Icon(Icons.star, size: 20), text: 'Favorites'),
+              const Tab(icon: Icon(Icons.folder, size: 20), text: 'Files'),
+              Tab(
+                icon: _buildUpdateBadgeIcon(
+                  icon: Icons.info_outline,
+                  showBadge: _updateService.hasUpdate,
                 ),
-              ),
-              // Navigation tabs overlay
-              Positioned(
-                top: 8,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.3),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _buildNavTab(context, 'Collection', Icons.collections, false,
-                              () => Navigator.popUntil(context, (route) => route.isFirst)),
-                          const SizedBox(width: 8),
-                          _buildNavTab(context, 'Session', Icons.sports_esports, false, () {
-                            Navigator.pushReplacement(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => SessionPage(
-                                  onThemeChanged: widget.onThemeChanged,
-                                  cars: widget.cars,
-                                  favoriteOrder: widget.favoriteOrder,
-                                  customFilePath: widget.currentFilePath,
-                                  onFilePathChanged: widget.onFilePathChanged,
-                                  onFavoriteOrderChanged: widget.onFavoriteOrderChanged,
-                                  onRemoveFavorite: widget.onRemoveFavorite,
-                                ),
-                              ),
-                            );
-                          }),
-                          const SizedBox(width: 8),
-                          _buildNavTab(context, 'Statistics', Icons.bar_chart, false, () {
-                            Navigator.pushReplacement(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => StatisticsPage(
-                                  cars: widget.cars,
-                                  onThemeChanged: widget.onThemeChanged,
-                                  currentFilePath: widget.currentFilePath,
-                                  onFilePathChanged: widget.onFilePathChanged,
-                                  favoriteOrder: widget.favoriteOrder,
-                                  onFavoriteOrderChanged: widget.onFavoriteOrderChanged,
-                                  onRemoveFavorite: widget.onRemoveFavorite,
-                                ),
-                              ),
-                            );
-                          }),
-                          const SizedBox(width: 8),
-                          _buildNavTab(context, 'Settings', Icons.settings, true, () {}),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+                text: 'About',
               ),
             ],
           ),
-          // Category tabs under banner
-          Container(
-            color: theme.brightness == Brightness.dark
-                ? const Color(0xFF2A2A2A)
-                : const Color(0xFFFFA842),
-            child: TabBar(
-              controller: _tabController,
-              indicatorColor: Colors.white,
-              labelColor: Colors.white,
-              unselectedLabelColor: Colors.white.withValues(alpha: 0.6),
-              tabs: const [
-                Tab(icon: Icon(Icons.palette, size: 20), text: 'Appearance'),
-                Tab(icon: Icon(Icons.star, size: 20), text: 'Favorites'),
-                Tab(icon: Icon(Icons.folder, size: 20), text: 'Files'),
-                Tab(icon: Icon(Icons.info_outline, size: 20), text: 'About'),
-              ],
-            ),
+        ),
+        // Tab content
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildAppearanceTab(theme),
+              _buildFavoritesTab(theme),
+              _buildFilesTab(theme),
+              _buildAboutTab(theme),
+            ],
           ),
-          // Tab content
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _buildAppearanceTab(theme),
-                _buildFavoritesTab(theme),
-                _buildFilesTab(theme),
-                _buildAboutTab(theme),
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -406,6 +274,14 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                     color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  'Background controls: Ctrl+Alt+1..0 (+1 online). Tab navigation is plain F1..F4 when app is focused.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
                 const SizedBox(height: 16),
                 if (_localFavoriteOrder.isEmpty)
                   Center(
@@ -432,7 +308,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                         orElse: () => Car(name: carName),
                       );
                       final keyLabel = index == 9 ? '0' : '${index + 1}';
-                      
+
                       return Container(
                         margin: const EdgeInsets.only(bottom: 8),
                         decoration: BoxDecoration(
@@ -469,7 +345,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                               IconButton(
                                 icon: const Icon(Icons.arrow_upward),
                                 iconSize: 20,
-                                color: index == 0 
+                                color: index == 0
                                     ? theme.colorScheme.onSurface.withValues(alpha: 0.3)
                                     : theme.colorScheme.primary,
                                 onPressed: index == 0 ? null : () {
@@ -483,7 +359,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                               IconButton(
                                 icon: const Icon(Icons.arrow_downward),
                                 iconSize: 20,
-                                color: index == _localFavoriteOrder.length - 1 
+                                color: index == _localFavoriteOrder.length - 1
                                     ? theme.colorScheme.onSurface.withValues(alpha: 0.3)
                                     : theme.colorScheme.primary,
                                 onPressed: index == _localFavoriteOrder.length - 1 ? null : () {
@@ -511,8 +387,8 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                     },
                   ),
                 if (_localFavoriteOrder.length > 10)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
                     child: Text(
                       'Only the first 10 favorites can have keyboard shortcuts',
                       style: TextStyle(
@@ -681,6 +557,107 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Row(
+                  children: [
+                    Icon(
+                      _updateService.hasUpdate ? Icons.system_update_alt : Icons.system_update,
+                      color: _updateService.hasUpdate ? Colors.red : theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'App Updates',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _updateService.currentVersion != null
+                      ? 'Current: ${_updateService.currentVersion}'
+                      : 'Current: 1.0.0',
+                ),
+                Text(
+                  _updateService.hasUpdate
+                      ? 'Latest: ${_updateService.updateInfo!.latestVersion}'
+                      : 'Latest: up to date',
+                  style: TextStyle(
+                    color: _updateService.hasUpdate ? Colors.red : null,
+                    fontWeight: _updateService.hasUpdate ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+                if (_updateService.statusMessage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _updateService.statusMessage!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+                if (_updateService.lastError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _updateService.lastError!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.red,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _updateService.isChecking
+                          ? null
+                          : () async {
+                              await _updateService.checkForUpdates();
+                              await widget.onRefreshRequested?.call();
+                            },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Check Now'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: (_updateService.hasUpdate && !_updateService.isDownloading)
+                          ? () async {
+                              await _updateService.installUpdate();
+                            }
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: theme.brightness == Brightness.dark
+                            ? const Color(0xFF5A8FAF)
+                            : const Color(0xFF4A9FD8),
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.download),
+                      label: Text(_updateService.isDownloading ? 'Downloading...' : 'Download + Install'),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        await _updateService.openReleaseNotes();
+                      },
+                      child: const Text('Open Releases'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Center(
                   child: Image.asset(
                     'assets/mw-logo4app.png',
@@ -734,7 +711,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                   title: Text('${widget.cars.length} cars in collection'),
                 ),
                 ListTile(
-                  leading: Icon(Icons.star, color: Colors.amber),
+                  leading: const Icon(Icons.star, color: Colors.amber),
                   title: Text('${widget.favoriteOrder.length} favorite cars'),
                 ),
                 ListTile(
@@ -749,43 +726,30 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     );
   }
 
-  Widget _buildNavTab(BuildContext context, String label, IconData icon, bool isActive, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: isActive
-                ? (Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF5A8FAF)
-                    : const Color(0xFF4A9FD8))
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                color: isActive ? Colors.white : Colors.white.withValues(alpha: 0.7),
-                size: 18,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.white.withValues(alpha: 0.7),
-                  fontSize: 16,
-                  fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
+  Widget _buildUpdateBadgeIcon({
+    required IconData icon,
+    required bool showBadge,
+  }) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(icon, size: 20),
+        if (showBadge)
+          const Positioned(
+            right: -2,
+            top: -2,
+            child: SizedBox(
+              width: 10,
+              height: 10,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  shape: BoxShape.circle,
                 ),
               ),
-            ],
+            ),
           ),
-        ),
-      ),
+      ],
     );
   }
 }

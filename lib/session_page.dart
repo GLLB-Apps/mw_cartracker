@@ -5,40 +5,25 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart' as path_provider;
 import 'package:uuid/uuid.dart';
+import 'car_service.dart';
 import 'models.dart';
-import 'statistics_page.dart';
-import 'settings_page.dart';
 
 class SessionPage extends StatefulWidget {
-  final Function(bool) onThemeChanged;
-  final List<Car> cars;
-  final List<String> favoriteOrder;
-  final String? customFilePath;
-  final Function(String?) onFilePathChanged;
-  final Function(List<String>) onFavoriteOrderChanged;
-  final Function(String) onRemoveFavorite;
-
-  const SessionPage({
-    super.key,
-    required this.onThemeChanged,
-    required this.cars,
-    required this.favoriteOrder,
-    required this.customFilePath,
-    required this.onFilePathChanged,
-    required this.onFavoriteOrderChanged,
-    required this.onRemoveFavorite,
-  });
+  const SessionPage({super.key});
 
   @override
   State<SessionPage> createState() => _SessionPageState();
 }
 
 class _SessionPageState extends State<SessionPage> {
+  final CarService _carService = CarService();
   GameSession? activeSession;
   List<GameSession> sessionHistory = [];
   List<SessionTemplate> templates = [];
   bool isLoading = true;
   final FocusNode _sessionFocusNode = FocusNode();
+  String? _latestWinningCar;
+  String? _latestWinningPlayer;
 
   @override
   void initState() {
@@ -67,11 +52,14 @@ class _SessionPageState extends State<SessionPage> {
 
   Future<void> _loadSessionData() async {
     try {
+      if (_carService.cars.isEmpty) {
+        await _carService.loadCars();
+      }
       final file = await _sessionFile;
       if (await file.exists()) {
         final contents = await file.readAsString();
         final dynamic jsonData = json.decode(contents);
-        
+
         setState(() {
           if (jsonData['activeSession'] != null) {
             activeSession = GameSession.fromJson(jsonData['activeSession']);
@@ -132,7 +120,7 @@ class _SessionPageState extends State<SessionPage> {
                 : const Color(0xFF4A9FD8),
           ),
         ),
-        content: Text('Delete this session permanently?'),
+        content: const Text('Delete this session permanently?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -256,7 +244,6 @@ class _SessionPageState extends State<SessionPage> {
                 ],
               ),
               const SizedBox(height: 24),
-              // Session info
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -290,7 +277,6 @@ class _SessionPageState extends State<SessionPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              // Chart
               Expanded(
                 child: BarChart(
                   BarChartData(
@@ -304,8 +290,11 @@ class _SessionPageState extends State<SessionPage> {
                         tooltipMargin: 8,
                         getTooltipItem: (group, groupIndex, rod, rodIndex) {
                           final player = session.players[group.x.toInt()];
+                          final carBreakdown = _formatCarBreakdown(
+                            _getPlayerCarWinCounts(session, player.name),
+                          );
                           return BarTooltipItem(
-                            '${player.name}\n${player.score} wins',
+                            '${player.name}\n${player.score} wins\n\n$carBreakdown',
                             const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -345,10 +334,10 @@ class _SessionPageState extends State<SessionPage> {
                           },
                         ),
                       ),
-                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                     ),
-                    gridData: FlGridData(show: true),
+                    gridData: const FlGridData(show: true),
                     borderData: FlBorderData(show: true),
                     barGroups: List.generate(
                       session.players.length,
@@ -368,7 +357,6 @@ class _SessionPageState extends State<SessionPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              // Player scores list
               Text(
                 'Final Scores',
                 style: TextStyle(
@@ -423,7 +411,7 @@ class _SessionPageState extends State<SessionPage> {
                     ],
                   ),
                 );
-              }).toList(),
+              }),
             ],
           ),
         ),
@@ -608,12 +596,14 @@ class _SessionPageState extends State<SessionPage> {
                         id: const Uuid().v4(),
                         players: players,
                         startTime: DateTime.now(),
+                        playerCarWins: {
+                          for (final player in players) player.name: <String, int>{},
+                        },
                       );
                     });
                     _saveSessionData();
                     Navigator.pop(context);
 
-                    // Request focus after dialog closes
                     Future.delayed(const Duration(milliseconds: 100), () {
                       _sessionFocusNode.requestFocus();
                     });
@@ -717,24 +707,230 @@ class _SessionPageState extends State<SessionPage> {
     );
   }
 
-  void _incrementPlayerScore(int playerIndex) {
+  Future<String?> _promptDrivenCarSelection() async {
+    if (_carService.cars.isEmpty) {
+      await _carService.loadCars();
+    }
+    if (!mounted) return null;
+
+    final allCars = _carService.cars.map((car) => car.name).toList()..sort();
+    final favorites = _carService.favoriteOrder
+        .where((name) => allCars.contains(name))
+        .toList();
+    final nonFavorites = allCars
+        .where((name) => !favorites.contains(name))
+        .toList();
+    final options = [...favorites, ...nonFavorites];
+    if (options.isEmpty) return null;
+
+    final previousCar = _latestWinningCar;
+    String selectedCar = (previousCar != null && options.contains(previousCar))
+        ? previousCar
+        : options.first;
+    String searchQuery = '';
+
+    return showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final filteredOptions = options
+              .where((name) => name.toLowerCase().contains(searchQuery.toLowerCase()))
+              .toList();
+
+          if (!filteredOptions.contains(selectedCar) && filteredOptions.isNotEmpty) {
+            selectedCar = filteredOptions.first;
+          }
+
+          return AlertDialog(
+            backgroundColor: Theme.of(context).colorScheme.surface,
+            title: Text(
+              'Select Driven Car',
+              style: TextStyle(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFF8FBADB)
+                    : const Color(0xFF4A9FD8),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Search car',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                    onChanged: (value) {
+                      setDialogState(() {
+                        searchQuery = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 240,
+                    width: double.maxFinite,
+                    child: filteredOptions.isEmpty
+                        ? const Center(child: Text('No cars found'))
+                        : ListView.builder(
+                            itemCount: filteredOptions.length,
+                            itemBuilder: (context, index) {
+                              final carName = filteredOptions[index];
+                              final isSelected = selectedCar == carName;
+                              return ListTile(
+                                dense: true,
+                                selected: isSelected,
+                                leading: Icon(
+                                  isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
+                                  size: 18,
+                                ),
+                                title: Text(
+                                  carName,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onTap: () {
+                                  setDialogState(() {
+                                    selectedCar = carName;
+                                  });
+                                },
+                                onLongPress: () => Navigator.pop(context, carName),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: filteredOptions.isEmpty ? null : () => Navigator.pop(context, selectedCar),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Theme.of(context).brightness == Brightness.dark
+                      ? const Color(0xFF5A8FAF)
+                      : const Color(0xFF4A9FD8),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Confirm +1'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Map<String, int> _getPlayerCarWinCounts(GameSession session, String playerName) {
+    final counts = session.playerCarWins[playerName];
+    if (counts == null) return {};
+    return Map<String, int>.fromEntries(
+      counts.entries.where((entry) => entry.value > 0),
+    );
+  }
+
+  String _formatCarBreakdown(Map<String, int> carWinCounts) {
+    if (carWinCounts.isEmpty) {
+      return 'No car data yet';
+    }
+
+    final sorted = carWinCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.map((entry) => '${entry.key}: ${entry.value}').join('\n');
+  }
+
+  Future<void> _incrementPlayerScore(int playerIndex) async {
     if (activeSession == null || playerIndex >= activeSession!.players.length) return;
+    final selectedCar = await _promptDrivenCarSelection();
+    if (selectedCar == null) return;
 
     setState(() {
       activeSession!.players[playerIndex].score++;
+      _carService.incrementTimesDriven(selectedCar, isOnline: true);
+      _latestWinningCar = selectedCar;
+      _latestWinningPlayer = activeSession!.players[playerIndex].name;
+      final playerName = activeSession!.players[playerIndex].name;
+      final playerWins = activeSession!.playerCarWins.putIfAbsent(
+        playerName,
+        () => <String, int>{},
+      );
+      playerWins[selectedCar] = (playerWins[selectedCar] ?? 0) + 1;
     });
-    _saveSessionData();
+    await _saveSessionData();
+    await _carService.saveCars();
+    if (!mounted) return;
 
-    // Show feedback
     final player = activeSession!.players[playerIndex];
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${player.name}: ${player.score} wins!'),
+        content: Text('${player.name}: ${player.score} wins (+1, $selectedCar)'),
+        duration: const Duration(milliseconds: 800),
+        behavior: SnackBarBehavior.floating,
+        width: 320,
+      ),
+    );
+  }
+
+  void _decrementPlayerScore(int playerIndex) {
+    if (activeSession == null || playerIndex >= activeSession!.players.length) return;
+    if (activeSession!.players[playerIndex].score <= 0) return;
+
+    setState(() {
+      final playerName = activeSession!.players[playerIndex].name;
+      activeSession!.players[playerIndex].score--;
+
+      final playerWins = activeSession!.playerCarWins[playerName];
+      if (playerWins != null && playerWins.isNotEmpty) {
+        String? carToDecrement;
+
+        if (_latestWinningPlayer == playerName &&
+            _latestWinningCar != null &&
+            (playerWins[_latestWinningCar!] ?? 0) > 0) {
+          carToDecrement = _latestWinningCar;
+        } else {
+          final sorted = playerWins.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+          if (sorted.isNotEmpty && sorted.first.value > 0) {
+            carToDecrement = sorted.first.key;
+          }
+        }
+
+        if (carToDecrement != null) {
+          playerWins[carToDecrement] = (playerWins[carToDecrement] ?? 0) - 1;
+          if ((playerWins[carToDecrement] ?? 0) <= 0) {
+            playerWins.remove(carToDecrement);
+          }
+        }
+      }
+    });
+    _saveSessionData();
+
+    final player = activeSession!.players[playerIndex];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${player.name}: ${player.score} wins'),
         duration: const Duration(milliseconds: 800),
         behavior: SnackBarBehavior.floating,
         width: 200,
       ),
     );
+  }
+
+  int? _playerIndexFromKey(RawKeyDownEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.digit1 || key == LogicalKeyboardKey.numpad1) return 0;
+    if (key == LogicalKeyboardKey.digit2 || key == LogicalKeyboardKey.numpad2) return 1;
+    if (key == LogicalKeyboardKey.digit3 || key == LogicalKeyboardKey.numpad3) return 2;
+    if (key == LogicalKeyboardKey.digit4 || key == LogicalKeyboardKey.numpad4) return 3;
+    if (key == LogicalKeyboardKey.digit5 || key == LogicalKeyboardKey.numpad5) return 4;
+    if (key == LogicalKeyboardKey.digit6 || key == LogicalKeyboardKey.numpad6) return 5;
+    return null;
   }
 
   @override
@@ -746,376 +942,52 @@ class _SessionPageState extends State<SessionPage> {
       autofocus: true,
       onKey: (event) {
         if (event is RawKeyDownEvent && activeSession != null) {
-          // Handle Escape to end session
           if (event.logicalKey == LogicalKeyboardKey.escape) {
             _endSession();
             return;
           }
-          
-          // Handle number keys for scoring
-          final label = event.logicalKey.keyLabel;
-          if (label.length == 1) {
-            final keyNum = int.tryParse(label);
-            if (keyNum != null && keyNum >= 1 && keyNum <= activeSession!.players.length) {
-              _incrementPlayerScore(keyNum - 1);
+
+          final playerIndex = _playerIndexFromKey(event);
+          if (playerIndex != null && playerIndex < activeSession!.players.length) {
+            if (HardwareKeyboard.instance.isShiftPressed) {
+              _decrementPlayerScore(playerIndex);
+            } else {
+              _incrementPlayerScore(playerIndex);
             }
           }
         }
       },
-      child: Scaffold(
-        body: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onTap: () {
-            _sessionFocusNode.requestFocus();
-          },
-          child: NestedScrollView(
-            headerSliverBuilder: (BuildContext context, bool innerBoxIsScrolled) {
-              return <Widget>[
-                SliverAppBar(
-                  expandedHeight: 280.0,
-                  floating: false,
-                  pinned: true,
-                  backgroundColor: Colors.transparent,
-                  leading: Container(),
-                  flexibleSpace: Stack(
-                    children: [
-                      FlexibleSpaceBar(
-                        background: Stack(
-                          fit: StackFit.expand,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () {
+          _sessionFocusNode.requestFocus();
+        },
+        child: isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  // Active Session Card
+                  if (activeSession != null) ...[
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Positioned.fill(
-                              child: Image.asset(
-                                'assets/banner.png',
-                                fit: BoxFit.cover,
-                                alignment: Alignment.topCenter,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return Container(
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        colors: Theme.of(context).brightness == Brightness.dark
-                                            ? [const Color(0xFF3A3A3A), const Color(0xFF2A2A2A)]
-                                            : [const Color(0xFF4A9FD8), const Color(0xFFFFA842)],
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                            Container(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Colors.black.withValues(alpha: 0.3),
-                                    Colors.black.withValues(alpha: 0.5),
-                                  ],
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                ),
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.only(top: 50, left: 20, right: 20),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Image.asset(
-                                    'assets/mw-logo4app.png',
-                                    height: 250,
-                                    fit: BoxFit.contain,
-                                  ),
-                                  const SizedBox(width: 30),
-                                  Expanded(
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const Icon(Icons.sports_esports, size: 40, color: Colors.white),
-                                        const SizedBox(height: 8),
-                                        const Text(
-                                          'Session',
-                                          style: TextStyle(
-                                            fontSize: 40,
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          activeSession != null
-                                              ? '${activeSession!.totalRounds} rounds played'
-                                              : 'No active session',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            color: Colors.white.withValues(alpha: 0.9),
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        collapseMode: CollapseMode.parallax,
-                      ),
-                      // Tabs
-                      Positioned(
-                        top: 8,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.3),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _buildTab(
-                                  context,
-                                  'Collection',
-                                  Icons.collections,
-                                  false,
-                                  () => Navigator.pop(context),
-                                ),
-                                const SizedBox(width: 8),
-                                _buildTab(
-                                  context,
-                                  'Session',
-                                  Icons.sports_esports,
-                                  true,
-                                  () {},
-                                ),
-                                const SizedBox(width: 8),
-                                _buildTab(
-                                  context,
-                                  'Statistics',
-                                  Icons.bar_chart,
-                                  false,
-                                  () async {
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => StatisticsPage(
-                                          cars: widget.cars,
-                                          onThemeChanged: widget.onThemeChanged,
-                                          currentFilePath: widget.customFilePath,
-                                          onFilePathChanged: widget.onFilePathChanged,
-                                          favoriteOrder: widget.favoriteOrder,
-                                          onFavoriteOrderChanged: widget.onFavoriteOrderChanged,
-                                          onRemoveFavorite: widget.onRemoveFavorite,
-                                        ),
-                                      ),
-                                    );
-                                    _sessionFocusNode.requestFocus();
-                                  },
-                                ),
-                                const SizedBox(width: 8),
-                                _buildTab(
-                                  context,
-                                  'Settings',
-                                  Icons.settings,
-                                  false,
-                                  () async {
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => SettingsPage(
-                                          onThemeChanged: widget.onThemeChanged,
-                                          currentFilePath: widget.customFilePath,
-                                          onFilePathChanged: widget.onFilePathChanged,
-                                          cars: widget.cars,
-                                          favoriteOrder: widget.favoriteOrder,
-                                          onFavoriteOrderChanged: widget.onFavoriteOrderChanged,
-                                          onRemoveFavorite: widget.onRemoveFavorite,
-                                        ),
-                                      ),
-                                    );
-                                    _sessionFocusNode.requestFocus();
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ];
-            },
-            body: isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: [
-                      // Active Session Card
-                      if (activeSession != null) ...[
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Icon(
-                                          Icons.play_circle_filled,
-                                          color: Colors.green,
-                                          size: 28,
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Active Session',
-                                          style: TextStyle(
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.bold,
-                                            color: theme.colorScheme.primary,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    ElevatedButton.icon(
-                                      onPressed: _endSession,
-                                      icon: const Icon(Icons.stop, size: 18),
-                                      label: const Text('End (ESC)'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: theme.brightness == Brightness.dark
-                                            ? const Color(0xFFCC6B5A)
-                                            : const Color(0xFFFF6B4A),
-                                        foregroundColor: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Press keys 1-${activeSession!.players.length} to score wins',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                                  ),
-                                ),
-                                const SizedBox(height: 16),
-                                // Player scores with bar chart
-                                SizedBox(
-                                  height: 400,
-                                  child: BarChart(
-                                    BarChartData(
-                                      alignment: BarChartAlignment.spaceAround,
-                                      maxY: (activeSession!.players.map((p) => p.score).fold(0, (a, b) => a > b ? a : b) + 2).toDouble(),
-                                      barTouchData: BarTouchData(enabled: true),
-                                      titlesData: FlTitlesData(
-                                        show: true,
-                                        bottomTitles: AxisTitles(
-                                          sideTitles: SideTitles(
-                                            showTitles: true,
-                                            reservedSize: 60,
-                                            getTitlesWidget: (value, meta) {
-                                              if (value.toInt() >= activeSession!.players.length) return const Text('');
-                                              final player = activeSession!.players[value.toInt()];
-                                              return Padding(
-                                                padding: const EdgeInsets.only(top: 8),
-                                                child: Column(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Container(
-                                                      padding: const EdgeInsets.all(4),
-                                                      decoration: BoxDecoration(
-                                                        color: theme.colorScheme.primary,
-                                                        borderRadius: BorderRadius.circular(4),
-                                                      ),
-                                                      child: Text(
-                                                        '${value.toInt() + 1}',
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 10,
-                                                          fontWeight: FontWeight.bold,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    const SizedBox(height: 4),
-                                                    Text(
-                                                      player.name,
-                                                      style: const TextStyle(fontSize: 10),
-                                                      overflow: TextOverflow.ellipsis,
-                                                      maxLines: 2,
-                                                      textAlign: TextAlign.center,
-                                                    ),
-                                                  ],
-                                                ),
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        leftTitles: AxisTitles(
-                                          sideTitles: SideTitles(
-                                            showTitles: true,
-                                            reservedSize: 40,
-                                            getTitlesWidget: (value, meta) {
-                                              return Text(
-                                                value.toInt().toString(),
-                                                style: const TextStyle(fontSize: 12),
-                                              );
-                                            },
-                                          ),
-                                        ),
-                                        topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                                        rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                                      ),
-                                      gridData: FlGridData(show: true),
-                                      borderData: FlBorderData(show: true),
-                                      barGroups: List.generate(
-                                        activeSession!.players.length,
-                                        (i) => BarChartGroupData(
-                                          x: i,
-                                          barRods: [
-                                            BarChartRodData(
-                                              toY: activeSession!.players[i].score.toDouble(),
-                                              color: theme.colorScheme.primary,
-                                              width: 30,
-                                              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-
-                      // Start Session / Templates (only show when no active session)
-                      if (activeSession == null) ...[
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 Row(
                                   children: [
-                                    Icon(
-                                      Icons.add_circle,
-                                      color: theme.colorScheme.primary,
+                                    const Icon(
+                                      Icons.play_circle_filled,
+                                      color: Colors.green,
                                       size: 28,
                                     ),
                                     const SizedBox(width: 12),
                                     Text(
-                                      'Start New Session',
+                                      'Active Session',
                                       style: TextStyle(
                                         fontSize: 20,
                                         fontWeight: FontWeight.bold,
@@ -1124,225 +996,429 @@ class _SessionPageState extends State<SessionPage> {
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 16),
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: ElevatedButton.icon(
-                                    onPressed: () => _startNewSession(),
-                                    icon: const Icon(Icons.play_arrow, size: 24),
-                                    label: const Text(
-                                      'New Session',
-                                      style: TextStyle(fontSize: 16),
+                                ElevatedButton.icon(
+                                  onPressed: _endSession,
+                                  icon: const Icon(Icons.stop, size: 18),
+                                  label: const Text('End (ESC)'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: theme.brightness == Brightness.dark
+                                        ? const Color(0xFFCC6B5A)
+                                        : const Color(0xFFFF6B4A),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Press keys 1-${activeSession!.players.length} for +1 (choose car), Shift+number for -1',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                              ),
+                            ),
+                            if (_latestWinningCar != null && _latestWinningPlayer != null) ...[
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.flag_circle,
+                                    size: 16,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'Latest round won with: $_latestWinningCar ($_latestWinningPlayer)',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: theme.colorScheme.onSurface.withValues(alpha: 0.75),
+                                      ),
                                     ),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: theme.brightness == Brightness.dark
-                                          ? const Color(0xFF5A8FAF)
-                                          : const Color(0xFF4A9FD8),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 16),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              height: 400,
+                              child: BarChart(
+                                BarChartData(
+                                  alignment: BarChartAlignment.spaceAround,
+                                  maxY: (activeSession!.players.map((p) => p.score).fold(0, (a, b) => a > b ? a : b) + 2).toDouble(),
+                                  barTouchData: BarTouchData(
+                                    enabled: true,
+                                    touchTooltipData: BarTouchTooltipData(
+                                      getTooltipColor: (group) =>
+                                          theme.colorScheme.primary.withValues(alpha: 0.9),
+                                      tooltipPadding: const EdgeInsets.all(8),
+                                      tooltipMargin: 8,
+                                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                                        final player = activeSession!.players[group.x.toInt()];
+                                        final carBreakdown = _formatCarBreakdown(
+                                          _getPlayerCarWinCounts(activeSession!, player.name),
+                                        );
+                                        return BarTooltipItem(
+                                          '${player.name}\n${player.score} wins\n\n$carBreakdown',
+                                          const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                  titlesData: FlTitlesData(
+                                    show: true,
+                                    bottomTitles: AxisTitles(
+                                      sideTitles: SideTitles(
+                                        showTitles: true,
+                                        reservedSize: 86,
+                                        getTitlesWidget: (value, meta) {
+                                          if (value.toInt() >= activeSession!.players.length) return const Text('');
+                                          final player = activeSession!.players[value.toInt()];
+                                          return Padding(
+                                            padding: const EdgeInsets.only(top: 18),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Text(
+                                                  player.name,
+                                                  style: const TextStyle(fontSize: 10),
+                                                  overflow: TextOverflow.ellipsis,
+                                                  maxLines: 2,
+                                                  textAlign: TextAlign.center,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Container(
+                                                  padding: const EdgeInsets.all(4),
+                                                  decoration: BoxDecoration(
+                                                    color: theme.colorScheme.primary,
+                                                    borderRadius: BorderRadius.circular(4),
+                                                  ),
+                                                  child: Text(
+                                                    '${value.toInt() + 1}',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    leftTitles: AxisTitles(
+                                      sideTitles: SideTitles(
+                                        showTitles: true,
+                                        reservedSize: 40,
+                                        getTitlesWidget: (value, meta) {
+                                          return Text(
+                                            value.toInt().toString(),
+                                            style: const TextStyle(fontSize: 12),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  ),
+                                  gridData: const FlGridData(show: true),
+                                  borderData: FlBorderData(show: true),
+                                  barGroups: List.generate(
+                                    activeSession!.players.length,
+                                    (i) => BarChartGroupData(
+                                      x: i,
+                                      barRods: [
+                                        BarChartRodData(
+                                          toY: activeSession!.players[i].score.toDouble(),
+                                          color: theme.colorScheme.primary,
+                                          width: 30,
+                                          borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
-                                if (templates.isNotEmpty) ...[
-                                  const SizedBox(height: 24),
-                                  Text(
-                                    'Quick Start from Template',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                      color: theme.colorScheme.onSurface,
-                                    ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Manual Round Controls',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...activeSession!.players.asMap().entries.map((entry) {
+                              final index = entry.key;
+                              final player = entry.value;
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: theme.colorScheme.outline),
                                   ),
-                                  const SizedBox(height: 8),
-                                  ...templates.asMap().entries.map((entry) {
-                                    final index = entry.key;
-                                    final template = entry.value;
-                                    return Padding(
-                                      padding: const EdgeInsets.only(bottom: 8),
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          color: theme.colorScheme.surfaceContainerHighest,
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(
-                                            color: theme.colorScheme.outline,
-                                          ),
-                                        ),
-                                        child: ListTile(
-                                          leading: Icon(
-                                            Icons.group,
-                                            color: theme.colorScheme.primary,
-                                          ),
-                                          title: Text(
-                                            template.name,
-                                            style: const TextStyle(fontWeight: FontWeight.bold),
-                                          ),
-                                          subtitle: Text('${template.playerNames.length} players: ${template.playerNames.join(", ")}'),
-                                          trailing: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              IconButton(
-                                                icon: const Icon(Icons.play_arrow),
-                                                color: Colors.green,
-                                                onPressed: () => _startNewSession(template: template),
-                                                tooltip: 'Start from template',
-                                              ),
-                                              IconButton(
-                                                icon: const Icon(Icons.delete),
-                                                color: Colors.red,
-                                                onPressed: () => _deleteTemplate(index),
-                                                tooltip: 'Delete template',
-                                              ),
-                                            ],
-                                          ),
+                                  child: ListTile(
+                                    leading: Container(
+                                      width: 28,
+                                      height: 28,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: theme.colorScheme.primary,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        '${index + 1}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
                                         ),
                                       ),
-                                    );
-                                  }).toList(),
-                                ],
+                                    ),
+                                    title: Text(player.name),
+                                    subtitle: Text('${player.score} wins'),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.remove_circle_outline),
+                                          color: Colors.redAccent,
+                                          onPressed: player.score > 0
+                                              ? () => _decrementPlayerScore(index)
+                                              : null,
+                                          tooltip: 'Remove win (-1)',
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.add_circle_outline),
+                                          color: Colors.green,
+                                          onPressed: () => _incrementPlayerScore(index),
+                                          tooltip: 'Add win (+1)',
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
+                  // Start Session / Templates (only show when no active session)
+                  if (activeSession == null) ...[
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.add_circle,
+                                  color: theme.colorScheme.primary,
+                                  size: 28,
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  'Start New Session',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
                               ],
                             ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        
-                        // Session History (only show when no active session)
-                        if (sessionHistory.isNotEmpty) ...[
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Row(
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: () => _startNewSession(),
+                                icon: const Icon(Icons.play_arrow, size: 24),
+                                label: const Text(
+                                  'New Session',
+                                  style: TextStyle(fontSize: 16),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: theme.brightness == Brightness.dark
+                                      ? const Color(0xFF5A8FAF)
+                                      : const Color(0xFF4A9FD8),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 16),
+                                ),
+                              ),
+                            ),
+                            if (templates.isNotEmpty) ...[
+                              const SizedBox(height: 24),
+                              Text(
+                                'Quick Start from Template',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.colorScheme.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              ...templates.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final template = entry.value;
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.surfaceContainerHighest,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: theme.colorScheme.outline,
+                                      ),
+                                    ),
+                                    child: ListTile(
+                                      leading: Icon(
+                                        Icons.group,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                      title: Text(
+                                        template.name,
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text('${template.playerNames.length} players: ${template.playerNames.join(", ")}'),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(
-                                            Icons.history,
-                                            color: theme.colorScheme.primary,
-                                            size: 28,
+                                          IconButton(
+                                            icon: const Icon(Icons.play_arrow),
+                                            color: Colors.green,
+                                            onPressed: () => _startNewSession(template: template),
+                                            tooltip: 'Start from template',
                                           ),
-                                          const SizedBox(width: 12),
-                                          Text(
-                                            'Session History',
-                                            style: TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.bold,
-                                              color: theme.colorScheme.primary,
-                                            ),
+                                          IconButton(
+                                            icon: const Icon(Icons.delete),
+                                            color: Colors.red,
+                                            onPressed: () => _deleteTemplate(index),
+                                            tooltip: 'Delete template',
                                           ),
                                         ],
                                       ),
-                                      IconButton(
-                                        icon: const Icon(Icons.delete_sweep),
-                                        color: Colors.red,
-                                        onPressed: _clearAllSessions,
-                                        tooltip: 'Clear all sessions',
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Session History
+                    if (sessionHistory.isNotEmpty) ...[
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.history,
+                                        color: theme.colorScheme.primary,
+                                        size: 28,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Text(
+                                        'Session History',
+                                        style: TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme.colorScheme.primary,
+                                        ),
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 16),
-                                  ...sessionHistory.take(10).map((session) {
-                                    final winner = session.players.reduce((a, b) => a.score > b.score ? a : b);
-                                    final duration = session.endTime != null
-                                        ? session.endTime!.difference(session.startTime)
-                                        : Duration.zero;
-
-                                    return Padding(
-                                      padding: const EdgeInsets.only(bottom: 12),
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          color: theme.colorScheme.surfaceContainerHighest,
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(
-                                            color: theme.colorScheme.outline,
-                                          ),
-                                        ),
-                                        child: ListTile(
-                                          leading: Icon(
-                                            Icons.emoji_events,
-                                            color: Colors.amber,
-                                          ),
-                                          title: Text(
-                                            '${winner.name} won!',
-                                            style: const TextStyle(fontWeight: FontWeight.bold),
-                                          ),
-                                          subtitle: Text(
-                                            '${_formatDate(session.startTime)} • ${duration.inMinutes}min • ${session.totalRounds} rounds',
-                                          ),
-                                          trailing: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              IconButton(
-                                                icon: const Icon(Icons.bar_chart),
-                                                color: theme.colorScheme.primary,
-                                                onPressed: () => _showSessionDetailsModal(session),
-                                                tooltip: 'View details',
-                                              ),
-                                              IconButton(
-                                                icon: const Icon(Icons.delete),
-                                                color: Colors.red,
-                                                onPressed: () => _deleteSession(session),
-                                                tooltip: 'Delete session',
-                                              ),
-                                            ],
-                                          ),
-                                          onTap: () => _showSessionDetailsModal(session),
-                                        ),
-                                      ),
-                                    );
-                                  }).toList(),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_sweep),
+                                    color: Colors.red,
+                                    onPressed: _clearAllSessions,
+                                    tooltip: 'Clear all sessions',
+                                  ),
                                 ],
                               ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ],
-                  ),
-          ),
-        ),
-      ),
-    );
-  }
+                              const SizedBox(height: 16),
+                              ...sessionHistory.take(10).map((session) {
+                                final winner = session.players.reduce((a, b) => a.score > b.score ? a : b);
+                                final duration = session.endTime != null
+                                    ? session.endTime!.difference(session.startTime)
+                                    : Duration.zero;
 
-  Widget _buildTab(BuildContext context, String label, IconData icon, bool isActive, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: isActive
-                ? (Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF5A8FAF)
-                    : const Color(0xFF4A9FD8))
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                color: isActive ? Colors.white : Colors.white.withValues(alpha: 0.7),
-                size: 18,
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.surfaceContainerHighest,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: theme.colorScheme.outline,
+                                      ),
+                                    ),
+                                    child: ListTile(
+                                      leading: const Icon(
+                                        Icons.emoji_events,
+                                        color: Colors.amber,
+                                      ),
+                                      title: Text(
+                                        '${winner.name} won!',
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text(
+                                        '${_formatDate(session.startTime)} • ${duration.inMinutes}min • ${session.totalRounds} rounds',
+                                      ),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(Icons.bar_chart),
+                                            color: theme.colorScheme.primary,
+                                            onPressed: () => _showSessionDetailsModal(session),
+                                            tooltip: 'View details',
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.delete),
+                                            color: Colors.red,
+                                            onPressed: () => _deleteSession(session),
+                                            tooltip: 'Delete session',
+                                          ),
+                                        ],
+                                      ),
+                                      onTap: () => _showSessionDetailsModal(session),
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ],
               ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.white.withValues(alpha: 0.7),
-                  fontSize: 16,
-                  fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

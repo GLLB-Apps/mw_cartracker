@@ -116,10 +116,33 @@ class CarService {
     }
   }
 
-  void incrementTimesDriven(String carName) {
+  void incrementTimesDriven(String carName, {bool isOnline = false}) {
     final carIndex = cars.indexWhere((car) => car.name == carName);
     if (carIndex != -1) {
       cars[carIndex].timesDriven++;
+      if (isOnline) {
+        cars[carIndex].timesDrivenOnline++;
+      } else {
+        cars[carIndex].timesDrivenOffline++;
+      }
+    }
+  }
+
+  void decrementTimesDriven(String carName, {bool isOnline = false}) {
+    final carIndex = cars.indexWhere((car) => car.name == carName);
+    if (carIndex == -1) return;
+
+    if (cars[carIndex].timesDriven <= 0) return;
+
+    cars[carIndex].timesDriven--;
+    if (isOnline) {
+      if (cars[carIndex].timesDrivenOnline > 0) {
+        cars[carIndex].timesDrivenOnline--;
+      }
+    } else {
+      if (cars[carIndex].timesDrivenOffline > 0) {
+        cars[carIndex].timesDrivenOffline--;
+      }
     }
   }
 
