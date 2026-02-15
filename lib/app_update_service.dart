@@ -150,6 +150,21 @@ class AppUpdateService extends ChangeNotifier {
 
   Future<void> _launchInstaller(String filePath) async {
     if (Platform.isWindows) {
+      final lowerPath = filePath.toLowerCase();
+
+      if (lowerPath.endsWith('.zip')) {
+        final extractedExePath = await _extractZipAndFindExe(filePath);
+        if (extractedExePath != null) {
+          await Process.start(extractedExePath, [], mode: ProcessStartMode.detached);
+          exit(0);
+        }
+
+        final extractedDir = await _extractZip(filePath);
+        await Process.start('explorer.exe', [extractedDir.path], mode: ProcessStartMode.detached);
+        statusMessage = 'Update downloaded. Opened extracted folder.';
+        return;
+      }
+
       await Process.start(filePath, [], mode: ProcessStartMode.detached);
       exit(0);
     } else if (Platform.isMacOS) {
@@ -161,6 +176,54 @@ class AppUpdateService extends ChangeNotifier {
     } else {
       await _openReleasePage();
     }
+  }
+
+  Future<Directory> _extractZip(String zipPath) async {
+    final tempDir = await getTemporaryDirectory();
+    final extractDir = Directory(
+      '${tempDir.path}/makeway_update_${DateTime.now().millisecondsSinceEpoch}',
+    );
+    await extractDir.create(recursive: true);
+
+    final result = await Process.run(
+      'powershell',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'Expand-Archive -Path "$zipPath" -DestinationPath "${extractDir.path}" -Force',
+      ],
+    );
+
+    if (result.exitCode != 0) {
+      throw Exception('Failed to extract update ZIP: ${result.stderr}');
+    }
+
+    return extractDir;
+  }
+
+  Future<String?> _extractZipAndFindExe(String zipPath) async {
+    final extractDir = await _extractZip(zipPath);
+    final entities = extractDir.listSync(recursive: true);
+    final exeFiles = entities
+        .whereType<File>()
+        .where((file) => file.path.toLowerCase().endsWith('.exe'))
+        .toList();
+
+    if (exeFiles.isEmpty) {
+      return null;
+    }
+
+    File? preferred = exeFiles.cast<File?>().firstWhere(
+          (file) =>
+              file!.path.toLowerCase().endsWith(r'\mw_cartracker.exe') ||
+              file.path.toLowerCase().endsWith('/mw_cartracker.exe'),
+          orElse: () => null,
+        );
+
+    preferred ??= exeFiles.first;
+    return preferred.path;
   }
 
   Map<String, dynamic>? _selectBestAsset(List<dynamic> assets) {
